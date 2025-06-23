@@ -33,6 +33,7 @@ use crate::spot_meta::erc20_contract_to_spot_token;
 
 /// Poll interval when tailing an *open* hourly file.
 const TAIL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+const HTTP_TAIL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 /// Sub‑directory that contains day folders (inside `local_ingest_dir`).
 const HOURLY_SUBDIR: &str = "hourly";
 
@@ -160,6 +161,28 @@ impl BlockIngest {
         block
     }
 
+    async fn start_http_ingest_loop(&self, current_head: u64, current_ts: u64) {
+        tokio::spawn(async move {
+            let blocks_http_client = reqwest::ClientBuilder::new().build().unwrap();
+
+            let evm_endpoint = std::env::var("EVM_ENDPOINT");
+
+            if let Ok(evm_endpoint) = evm_endpoint {
+                let result = blocks_http_client.post(evm_endpoint).body(serde_json::json!({
+                    "jsonrpc":"2.0","method":"eth_getBlockByNumber","params":[format!("{:#x}", current_head),false],"id":1
+                }).to_string()).send().await;
+                if let Ok(response) = result {
+                    println!("HTTP BLOCKS {:?}", response.text().await);
+                }
+                loop {
+                    tokio::time::sleep(HTTP_TAIL_INTERVAL).await;
+                }
+            } else {
+                info!("No EVM endpoint configured. Not running http ingeste loop.");
+            }
+        });
+    }
+
     async fn start_local_ingest_loop(&self, current_head: u64, current_ts: u64) {
         let Some(root) = &self.local_ingest_dir else { return }; // nothing to do
         let root = root.to_owned();
@@ -213,7 +236,7 @@ impl BlockIngest {
                     day_str = date_from_datetime(dt);
                     last_line = 0;
                     continue; // immediately inspect the next hour file
-                }
+                };
 
                 tokio::time::sleep(TAIL_INTERVAL).await;
             }
@@ -255,7 +278,8 @@ impl BlockIngest {
             .timestamp();
 
         println!("Current height {height}, timestamp {current_block_timestamp}");
-        self.start_local_ingest_loop(height, current_block_timestamp).await;
+        // self.start_local_ingest_loop(height, current_block_timestamp).await;
+        self.start_http_ingest_loop(height, current_block_timestamp).await;
 
         loop {
             let Some(original_block) = self.collect_block(height).await else {
