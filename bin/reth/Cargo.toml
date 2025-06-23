@@ -73,6 +73,8 @@ alloy-rpc-types = { workspace = true, features = ["engine"] }
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-eth.workspace = true
+alloy-provider.workspace = true
+alloy-transport.workspace = true
 
 # tracing
 tracing.workspace = true

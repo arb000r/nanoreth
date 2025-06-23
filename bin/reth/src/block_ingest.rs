@@ -6,6 +6,7 @@ use std::sync::Arc;
 use alloy_consensus::{BlockBody, BlockHeader, Transaction};
 use alloy_primitives::TxKind;
 use alloy_primitives::{Address, PrimitiveSignature, B256, U256};
+use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rpc_types::engine::{
     ExecutionPayloadEnvelopeV3, ForkchoiceState, PayloadAttributes, PayloadStatusEnum,
 };
@@ -168,13 +169,19 @@ impl BlockIngest {
             let evm_endpoint = std::env::var("EVM_ENDPOINT");
 
             if let Ok(evm_endpoint) = evm_endpoint {
-                let result = blocks_http_client.post(evm_endpoint).body(serde_json::json!({
-                    "jsonrpc":"2.0","method":"eth_getBlockByNumber","params":[format!("{:#x}", current_head),false],"id":1
-                }).to_string()).send().await;
-                if let Ok(response) = result {
-                    println!("HTTP BLOCKS {:?}", response.text().await);
-                }
+                let provider =
+                    ProviderBuilder::new().on_http(evm_endpoint.as_str().parse().unwrap());
+
                 loop {
+                    let block = provider
+                        .get_block_by_number(
+                            alloy_eips::BlockNumberOrTag::Number(current_head),
+                            alloy_rpc_types::BlockTransactionsKind::Full,
+                        )
+                        .await;
+
+                    println!("block {:?}", block);
+
                     tokio::time::sleep(HTTP_TAIL_INTERVAL).await;
                 }
             } else {
