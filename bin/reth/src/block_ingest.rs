@@ -180,7 +180,7 @@ impl BlockIngest {
                         )
                         .await;
 
-                    println!("block {:?}", block);
+                    println!("block {:#?}", block);
 
                     tokio::time::sleep(HTTP_TAIL_INTERVAL).await;
                 }
