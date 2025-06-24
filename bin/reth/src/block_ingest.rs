@@ -238,7 +238,8 @@ impl BlockIngest {
                                 "id":1,
                                 "jsonrpc": "2.0",
                                 "method": "eth_getSystemTxsByBlockNumber",
-                                "params": [format!("{:#x}", current_head),false]
+                                "params": ["0x635d4b"]
+                                // "params": [format!("{:#x}", current_h0x635d4bead),false]
                             })
                             .to_string(),
                         )
