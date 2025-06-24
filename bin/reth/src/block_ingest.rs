@@ -4,12 +4,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use alloy_consensus::{BlockBody, BlockHeader, Transaction};
+use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::TxKind;
 use alloy_primitives::{Address, PrimitiveSignature, B256, U256};
-use alloy_provider::{Provider, ProviderBuilder};
+use alloy_provider::fillers::{
+    BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
+};
+use alloy_provider::{Identity, Provider, ProviderBuilder, RootProvider};
 use alloy_rpc_types::engine::{
     ExecutionPayloadEnvelopeV3, ForkchoiceState, PayloadAttributes, PayloadStatusEnum,
 };
+use alloy_rpc_types::TransactionReceipt;
 use jsonrpsee::http_client::{transport::HttpBackend, HttpClient};
 use reth::network::PeersHandleProvider;
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
@@ -19,7 +24,7 @@ use reth_node_builder::EngineTypes;
 use reth_node_builder::NodeTypesWithEngine;
 use reth_node_builder::{rpc::RethRpcAddOns, FullNode};
 use reth_payload_builder::{EthBuiltPayload, EthPayloadBuilderAttributes, PayloadId};
-use reth_primitives::{Transaction as TypedTransaction, TransactionSigned};
+use reth_primitives::{SealedBlock, Transaction as TypedTransaction, TransactionSigned};
 use reth_provider::{BlockHashReader, BlockReader, StageCheckpointReader};
 use reth_rpc_api::EngineApiClient;
 use reth_rpc_layer::AuthClientService;
@@ -51,6 +56,49 @@ struct LocalBlockAndReceipts(String, BlockAndReceipts);
 struct ScanResult {
     next_expected_height: u64,
     new_blocks: Vec<BlockAndReceipts>,
+}
+
+async fn queried_block_to_sealed(
+    provider: &FillProvider<
+        JoinFill<
+            Identity,
+            JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
+        >,
+        RootProvider,
+    >,
+    block: alloy_rpc_types_eth::Block,
+    receipts: Vec<TransactionReceipt>,
+) -> BlockAndReceipts {
+    let hash = block.header.hash;
+    let header = alloy_consensus::Header::from(block.header.clone());
+    let mut ommers = vec![];
+    for uncle_idx in 0..block.uncles.len() {
+        let ommer_result = provider.get_uncle(BlockId::hash(hash), uncle_idx as u64).await;
+        if let Ok(maybe_ommer) = ommer_result {
+            if let Some(ommer) = maybe_ommer {
+                ommers.push(alloy_consensus::Header::from(ommer.header));
+            }
+        }
+    }
+    let block_body = alloy_consensus::BlockBody {
+        transactions: block
+            .clone()
+            .map_transactions(|t| TransactionSigned::from(t.inner))
+            .transactions
+            .into_transactions_vec(),
+        ommers,
+        withdrawals: block.withdrawals,
+    };
+
+    let sealed: reth_primitives::SealedBlock =
+        reth_primitives::SealedBlock::from_parts_unchecked(header, block_body, hash);
+
+    BlockAndReceipts {
+        block: todo!(),
+        receipts: todo!(),
+        system_txs: todo!(),
+        read_precompile_calls: todo!(),
+    }
 }
 
 fn scan_hour_file(path: &Path, last_line: &mut usize, start_height: u64) -> ScanResult {
@@ -164,8 +212,7 @@ impl BlockIngest {
 
     async fn start_http_ingest_loop(&self, current_head: u64, current_ts: u64) {
         tokio::spawn(async move {
-            let blocks_http_client = reqwest::ClientBuilder::new().build().unwrap();
-
+            let http_client = reqwest::ClientBuilder::new().build().unwrap();
             let evm_endpoint = std::env::var("EVM_ENDPOINT");
 
             if let Ok(evm_endpoint) = evm_endpoint {
@@ -173,14 +220,41 @@ impl BlockIngest {
                     ProviderBuilder::new().on_http(evm_endpoint.as_str().parse().unwrap());
 
                 loop {
-                    let block = provider
+                    let block_result = provider
                         .get_block_by_number(
                             alloy_eips::BlockNumberOrTag::Number(current_head),
                             alloy_rpc_types::BlockTransactionsKind::Full,
                         )
                         .await;
 
-                    println!("block {:#?}", block);
+                    let block_receipts_result = provider
+                        .get_block_receipts(BlockId::Number(BlockNumberOrTag::Number(current_head)))
+                        .await;
+
+                    let system_txs_result = http_client
+                        .post(&evm_endpoint)
+                        .body(
+                            serde_json::json!({
+                                "id":1,
+                                "jsonrpc": "2.0",
+                                "method": "eth_getBlockByNumber",
+                                "params": [format!("{:#x}", current_head),false]
+                            })
+                            .to_string(),
+                        )
+                        .send()
+                        .await;
+
+                    if let (Ok(maybe_block), Ok(maybe_block_receipts), Ok(system_txs_response)) =
+                        (block_result, block_receipts_result, system_txs_result)
+                    {
+                        println!("system txs {:?}", system_txs_response.text().await);
+
+                        if let (Some(block), Some(receipts)) = (maybe_block, maybe_block_receipts) {
+                            let sealed_block =
+                                queried_block_to_sealed(&provider, block, receipts).await;
+                        }
+                    }
 
                     tokio::time::sleep(HTTP_TAIL_INTERVAL).await;
                 }
