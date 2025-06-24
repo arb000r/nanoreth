@@ -237,7 +237,7 @@ impl BlockIngest {
                             serde_json::json!({
                                 "id":1,
                                 "jsonrpc": "2.0",
-                                "method": "eth_getBlockByNumber",
+                                "method": "eth_getSystemTxsByBlockNumber",
                                 "params": [format!("{:#x}", current_head),false]
                             })
                             .to_string(),
